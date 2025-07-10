@@ -1,6 +1,7 @@
 import numpy as np
 import numpy.typing as npt
 from typing import Union, Sequence
+from tensorflow.keras.datasets import mnist
 
 class autodiffArray:
     def __init__(self, value):
@@ -10,13 +11,18 @@ class autodiffArray:
             self.parent2 = None
             self.parentOperator = None
             self.value = value.value
-        else:
+        # elif isinstance(value, (int, float)):
             
+        #     self.parent1 = None
+        #     self.parent2 = None
+        #     self.parentOperator = None
+        #     self.value = np.array([value])
+        else:
             self.parent1 = None
             self.parent2 = None
             self.parentOperator = None
             self.value = value
-        self.grad = 0
+        self.grad = 0.0# np.zeros_like(self.value,  dtype='float64')  # Initialize gradient to zero
 
     def __add__(self, other):
         if not isinstance(other, autodiffArray):
@@ -66,13 +72,30 @@ class autodiffArray:
         return out
 
     def __rtruediv__(self, other):
-        return autodiffArray(other / self.value)
+        if not isinstance(other, autodiffArray):
+            other = autodiffArray(other)
+        return other.__truediv__(self)
+
+    def __matmul__(self, other):
+        if not isinstance(other, autodiffArray):
+            other = autodiffArray(other)
+        out = autodiffArray(self.value @ other.value)
+        out.parent1 = self
+        out.parent2 = other
+        out.parentOperator = '@'
+        return out
+    
+    def __pow__(self, exponent):
+        out = self
+        for _ in range(exponent - 1):
+            out = out * self
+        return out
 
     def __repr__(self):
         return f"autodiffArray(value={self.value}, grad={self.grad})"
 
     def backward(self):
-        self.grad = 1.0
+        self.grad = np.ones_like(self.value, dtype=np.float64)  # Initialize gradient to 1 for the output node
         self.backward_helper()
     def backward_helper(self):
         if not isinstance(self.parent1, autodiffArray) or not isinstance(self.parent2, autodiffArray):
@@ -90,44 +113,63 @@ class autodiffArray:
         elif self.parentOperator == '/':
             self.parent1.grad += self.grad / self.parent2.value
             self.parent2.grad -= self.grad / self.parent2.value ** 2 * self.parent1.value
-        
+        elif self.parentOperator == '@':
+            print("backward matmul")
+            
+            i = [0]
+            def tryit(func):
+                i[0] += 1
+                try:
+                    print(i[0], func())
+                except:
+                    pass
+            tryit(lambda: self.grad.shape)
+            tryit(lambda: self.parent1.value.shape)
+            tryit(lambda: self.parent2.value.shape)
+            tryit(lambda: self.parent1.grad.shape)
+            tryit(lambda: self.parent2.grad.shape)
+            tryit(lambda: self.grad)
+            tryit(lambda: self.parent1.value)
+            tryit(lambda: self.parent2.value)
+            tryit(lambda: self.parent1.grad)
+            tryit(lambda: self.parent2.grad)
+            
+            self.parent1.grad += self.grad @ self.parent2.value.T
+            self.parent2.grad += (self.grad.T @ self.parent1.value).T
+
         self.parent1.backward_helper()
         if self.parent1 != self.parent2: # double counts if they are the same (grad was already twice as much as it should be)
             self.parent2.backward_helper()
             
+class NeuralNetwork:
+    def __init__(self, layer_sizes):
+        self.layers = []
+        self.biases = []
+        for i in range(len(layer_sizes)-1):
+            self.layers.append(autodiffArray(np.random.randn(layer_sizes[i], layer_sizes[i+1])))
+            self.biases.append(autodiffArray(np.random.randn(layer_sizes[i+1])))
+    def forward(self, x):
+        for layer, bias in zip(self.layers, self.biases):
+            x = x @ layer + bias.value
+        return x
 
-class Singleton(type):
-    _instances = {}
-    def __call__(cls, *args, **kwargs):
-        if cls not in cls._instances:
-            cls._instances[cls] = super(Singleton, cls).__call__(*args, **kwargs)
-        return cls._instances[cls]
+    def zero_grad(self):
+        for layer in self.layers:
+            layer.grad = 0
+        for bias in self.biases:
+            bias.grad = 0
 
-# class autodiffGraph(metaclass=Singleton):
-#     def __init__(self):
-#         self.nodes = []
-
-#     def add_node(self, node, parent1=None, parent2=None):
-#         if not isinstance(node, autodiffArray):
-#             raise TypeError("Only autodiffArray instances can be added to the graph.")
-#         if node in self.nodes:
-#             return
-#         self.nodes.append(node)
-#         if parent1 is not None:
-#             self.add_node(parent1)
-#         if parent2 is not None:
-#             self.add_node(parent2)
-
+    def update(self, learning_rate=0.01):
+        for i in range(len(self.layers)):
+            self.layers[i].value -= learning_rate * self.layers[i].grad
+            self.biases[i].value -= learning_rate * self.biases[i].grad
+            self.zero_grad()
         
 
 
-#     def compute_gradients(self, from_node):
-#         for node in reversed(self.nodes):
-#             if isinstance(node, autodiffArray):
-#                 # Here we would compute the gradients based on the operations
-#                 # For simplicity, we assume that the gradients are already set
-#                 pass
-
+# def autodiffSum(arr: autodiffArray):
+#     arr.value = np.sum(arr.value)
+#     arr.grad = np.on
 
 
 def test1():
@@ -233,15 +275,15 @@ def test_nested_operations_backward():
     assert np.allclose(e.grad, np.array([-20.0 / 25.0]))
 
 def test_nested_operations_reassign():
-    a = autodiffArray(np.array([-2.0]))
-    b = autodiffArray(np.array([3.0]))
+    a = autodiffArray(np.array([-2.0, 3]))
+    b = autodiffArray(np.array([3.0, -1]))
 
     c = a + 2 * b
     e = c * c
     e.backward()
     print("test1",a.grad, b.grad)
-    assert np.allclose(a.grad, np.array([8]))
-    assert np.allclose(b.grad, np.array([16]))
+    assert np.allclose(a.grad, np.array([8, 2]))
+    assert np.allclose(b.grad, np.array([16,4]))
 
 
     
@@ -255,6 +297,47 @@ def test_nested_operations_reassign():
     assert np.allclose(a.grad, np.array([0]))
     assert np.allclose(b.grad, np.array([0]))
 
+
+def test_matmul():
+    a = autodiffArray(np.array([[1.0, 2.0], [3.0, 4.0]]))
+    b = autodiffArray(np.array([[5.0, 6.0], [7.0, 8.0]]))
+    c = a @ b
+    c.backward()
+    assert np.allclose(a.grad, np.array([[5.0 + 14.0, 6.0 + 16.0], [7.0 + 24.0, 8.0 + 32.0]]))
+    assert np.allclose(b.grad, np.array([[1.0 * 3.0 + 2.0 * 4.0, 1.0 * 4.0 + 2.0 * 8.0], [3.0 * 3.0 + 4.0 * 4.0, 3.0 * 4.0 + 4.0 * 8.0]]))
+
+def load_mnist(normalize=True, flatten=True):
+    (x_train, y_train), (x_test, y_test) = mnist.load_data()
+    if normalize:
+        x_train = x_train.astype(np.float32) / 255.0
+        x_test = x_test.astype(np.float32) / 255.0
+    if flatten:
+        x_train = x_train.reshape(-1, 28*28)
+        x_test = x_test.reshape(-1, 28*28)
+    return (x_train, y_train), (x_test, y_test)
+
+def testTrainMnist():
+    (x_train, y_train), (x_test, y_test) = load_mnist()
+    x_train = autodiffArray(x_train)
+    y_train = autodiffArray(np.eye(10)[y_train])
+    nn = NeuralNetwork([784, 128, 10])  # Example neural network with input size 784 (28x28), hidden layer of size 128, and output layer of size 10
+    print("MNIST data loaded and converted to autodiffArray.")
+    for i in range(10):
+        x = x_train
+        y = y_train
+        y_hat = nn.forward(x)
+        # Here you can add more operations and test gradients
+        # For example, you can compute a loss and call backward
+        sumAlongRows = autodiffArray(np.ones([1, y.value.shape[0]])) @ ((y_hat - y) ** 2)
+        # sumAlongRows.value = sumAlongRows.value[None, :]
+        print("sum shapes",sumAlongRows.value.shape)
+        loss = (sumAlongRows @ autodiffArray(np.ones([y.value.shape[1], 1]))) / (60000 * 100)
+        # loss2 =  (((y_hat - y) ** 2) @ autodiffArray(np.ones([y.value.shape[0]]))) @ autodiffArray(np.ones([y.value.shape[1]]        print(loss2.value, loss.value)
+        print(loss.value.shape)
+        loss.backward()
+        nn.update()
+        # print(f"Gradients: x.grad={x.grad}, y.grad={y.grad}")
+        print("epoch", i,"loss:",loss.value)
 if __name__ == "__main__":
     test1()
     test_addition_backward_fixed()
@@ -267,6 +350,7 @@ if __name__ == "__main__":
     test_division_backward_random()
     test_nested_operations_backward()
     test_nested_operations_reassign()
+    testTrainMnist()
     # d = autodiffArray(np.array([5.0]), 1.0)
     # d2 = d * 2
     # print(d2)
